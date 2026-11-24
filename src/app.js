@@ -588,7 +588,13 @@ view.addEventListener('click', function(ev){
     if(el.id === 'batchModeBtn'){ __toggleBatchMode(); return; }
     if(el.id === 'resetLists'){
       try{ localStorage.removeItem(LK); localStorage.removeItem(LK_LEGACY); }catch(e){}
-      __lLoad();
+      try{ __lLoad(); }catch(e){
+  try{
+    var __fb = __lBuildServerSnap(window.__LISTS__ || []);
+    __lState = { version: 2, serverSig: __fb.sig, serverSnap: __fb.snap, lists: __fb.lists };
+    LISTS = __lState.lists;
+  }catch(e2){}
+}
       renderLists(true);
       showToast('已恢复服务器默认列表');
       return;
@@ -1515,8 +1521,9 @@ var __lState = { version: 2, serverSig: '', serverSnap: {}, lists: [] };
 var LISTS = __lState.lists;
 
 function __lUniq(arr){
+  if(!Array.isArray(arr)) return [];
   var out = [], seen = {};
-  (arr || []).forEach(function(x){
+  arr.forEach(function(x){
     var s = String(x || '').trim();
     if(s && !seen[s]){ seen[s] = 1; out.push(s); }
   });
@@ -2039,7 +2046,13 @@ function __lAsk(){
   openNewListModal();
 }
 
-__lLoad();
+try{ __lLoad(); }catch(e){
+  try{
+    var __fb = __lBuildServerSnap(window.__LISTS__ || []);
+    __lState = { version: 2, serverSig: __fb.sig, serverSnap: __fb.snap, lists: __fb.lists };
+    LISTS = __lState.lists;
+  }catch(e2){}
+}
 try{
   window.__nav = { home:renderHome, work:renderWork, play:playTrack, full:openFull,
                    lists:renderLists, list:renderListWorks, move:__lMove, moveMany:__lMoveMany,
@@ -2145,23 +2158,24 @@ window.addEventListener('error', function(e){
 /* 启动 */
 if (window.__hist) __hist.init();
 window.__pipHttpsPort = 8443;
-window.__pipHttpsReady = true;
+window.__pipHttpsReady = false;
 try{
-  fetch('/__pip_config', {cache:'no-store'}).then(function(r){ return r.json(); }).then(function(c){
-    if (c && c.httpsPort) window.__pipHttpsPort = c.httpsPort;
-    window.__pipHttpsReady = !!(c && c.httpsReady);
-    /* 桌面 Chromium：自动切到 HTTPS，之后画中画按钮一步打开系统窗口。
-       手机/iPad 不跳转（手机浏览器没有 Document PiP，且证书提示麻烦）。 */
-    if (window.__pipHttpsReady && location.protocol === 'http:' && isDesktopChromium() &&
-        location.hostname !== 'localhost' && location.hostname !== '127.0.0.1' &&
-        !/[?&]nossl=1/.test(location.search)){
-      var port = c.httpsPort || 8443;
-      location.replace('https://' + location.hostname + ':' + port + location.pathname + location.search + location.hash);
-    }
-  }).catch(function(){ window.__pipHttpsReady = false; });
+  if (!/\.github\.io$/i.test(location.hostname || '')){
+    fetch('/__pip_config', {cache:'no-store'}).then(function(r){ return r.json(); }).then(function(c){
+      if (c && c.httpsPort) window.__pipHttpsPort = c.httpsPort;
+      window.__pipHttpsReady = !!(c && c.httpsReady);
+      if (window.__pipHttpsReady && location.protocol === 'http:' && isDesktopChromium() &&
+          location.hostname !== 'localhost' && location.hostname !== '127.0.0.1' &&
+          !/[?&]nossl=1/.test(location.search)){
+        var port = c.httpsPort || 8443;
+        location.replace('https://' + location.hostname + ':' + port + location.pathname + location.search + location.hash);
+      }
+    }).catch(function(){ window.__pipHttpsReady = false; });
+  }
 }catch(e){ window.__pipHttpsReady = false; }
 __clearSearch();
 renderHome(true);
+window.__bootOK = true;
 
 /* ---------- 从 HTTP 切到 HTTPS 后恢复播放，并提示点开系统画中画 ---------- */
 (function(){
