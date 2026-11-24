@@ -79,6 +79,7 @@
   <div class="as-box" id="asBox">
     <button class="as-x" id="asClose" aria-label="关闭">×</button>
     <h3 id="asTitle">加入列表</h3>
+    <div class="as-sub" id="asSub"></div>
     <div id="asList"></div>
     <div class="as-row as-new" id="asNew"><span class="as-n">＋ 新建列表</span></div>
     <form class="as-form hide" id="asNewForm">
@@ -87,6 +88,13 @@
       <button type="button" class="as-cancel" id="asNewCancel">取消</button>
     </form>
   </div>
+</div>
+
+<div id="batchBar" aria-hidden="true">
+  <span class="bb-info" id="bbInfo">已选 0 项</span>
+  <button type="button" class="bb-btn bb-pri" id="bbMove">移动到其他列表</button>
+  <button type="button" class="bb-btn bb-del" id="bbDel">移出</button>
+  <button type="button" class="bb-btn" id="bbCancel">取消</button>
 </div>
 
 <div id="newListModal" role="dialog" aria-modal="true" aria-hidden="true">
