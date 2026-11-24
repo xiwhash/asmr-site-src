@@ -105,7 +105,8 @@ var __histRoute = {
       } else {
         /* 返回首页 */
         full.classList.remove('on');
-        renderHome(true);
+        __clearSearch();
+renderHome(true);
         __histRoute.current = 'home';
         __histRoute.rj = null;
       }
@@ -113,10 +114,19 @@ var __histRoute = {
   },
   push(page, rj){
     try{
-      if (page === 'player') history.pushState({ __p: 'player' }, '', location.pathname + location.search);
-      else if (page === 'work') history.pushState({ __p: 'work', rj: rj }, '', location.pathname + location.search);
-      else if (page === 'lists') history.pushState({ __p: 'lists' }, '', location.pathname + location.search);
-      else if (page === 'list') history.pushState({ __p: 'list', lid: rj }, '', location.pathname + location.search);
+      var curSt = history.state || {};
+      var same = (curSt.__p === page) && (
+        (page === 'home' || page === 'lists' || page === 'player') ||
+        (page === 'work' && curSt.rj === rj) ||
+        (page === 'list' && curSt.lid === rj)
+      );
+      if (!same){
+        if (page === 'home') history.pushState({ __p: 'home' }, '', location.pathname + location.search);
+        else if (page === 'player') history.pushState({ __p: 'player' }, '', location.pathname + location.search);
+        else if (page === 'work') history.pushState({ __p: 'work', rj: rj }, '', location.pathname + location.search);
+        else if (page === 'lists') history.pushState({ __p: 'lists' }, '', location.pathname + location.search);
+        else if (page === 'list') history.pushState({ __p: 'list', lid: rj }, '', location.pathname + location.search);
+      }
       __histRoute.current = page;
       __histRoute.rj = rj || null;
     }catch(e){}
@@ -162,7 +172,18 @@ function showToast(msg, actLabel, actFn){
   }catch(e){}
 }
 
-/* ---------- 首页 ---------- */
+/* ---------- 首页（主页：全部作品） ---------- */
+function __clearSearch(){
+  query = '';
+  try{ var qi = document.getElementById('q'); if(qi) qi.value = ''; }catch(e){}
+}
+function __navTabsHtml(active){
+  var listCnt = (typeof LISTS !== 'undefined' && LISTS) ? LISTS.length : 0;
+  return '<div class="navtabs">'
+    + '<button type="button" class="ntab'+(active==='home'?' on':'')+'" id="tabHome">主页 · 全部作品 ('+works.length+')</button>'
+    + '<button type="button" class="ntab'+(active==='lists'?' on':'')+'" id="tabLists">我的列表 ('+listCnt+')</button>'
+    + '</div>';
+}
 function renderHome(skipHist){
   if(typeof __exitBatch === 'function') __exitBatch();
   __fromListId = null;
@@ -178,8 +199,9 @@ function renderHome(skipHist){
            (w.tags||[]).join(' ').toLowerCase().indexOf(q)>-1 ||
            (w.rj||'').toLowerCase().indexOf(q)>-1;
   });
-  if(!list.length){ view.innerHTML = '<div class="empty">没有匹配的作品</div>'; return; }
-  var h = '<div class="grid">';
+  var head = __navTabsHtml('home');
+  if(!list.length){ view.innerHTML = head + '<div class="empty">没有匹配的作品</div>'; return; }
+  var h = head + '<div class="grid">';
   for(var i=0;i<list.length;i++){
     var w = list[i];
     h += '<div class="card" data-rj="'+esc(w.rj)+'">'
@@ -560,9 +582,9 @@ function updateMediaSession(){
 view.addEventListener('click', function(ev){
   var el = ev.target;
   while(el && el !== view){
-    if(el.id === 'backHome'){ renderHome(); return; }
-    if(el.id === 'backLists'){ renderLists(true); return; }
-    if(el.id === 'backToList'){ renderListWorks(el.dataset.lid || el.getAttribute('data-lid'), true); return; }
+    if(el.id === 'backHome' || el.id === 'tabHome'){ __clearSearch(); renderHome(); return; }
+    if(el.id === 'backLists' || el.id === 'tabLists'){ renderLists(); return; }
+    if(el.id === 'backToList'){ renderListWorks(el.dataset.lid || el.getAttribute('data-lid')); return; }
     if(el.id === 'batchModeBtn'){ __toggleBatchMode(); return; }
     if(el.id === 'resetLists'){
       try{ localStorage.removeItem(LK); localStorage.removeItem(LK_LEGACY); }catch(e){}
@@ -1784,7 +1806,7 @@ function renderLists(skipHist){
   __curView = { type:'lists', lid:null, rj:null };
   ttl.textContent = '我的列表';
   if(!skipHist && window.__hist) window.__hist.push('lists');
-  var h = '<div class="back" id="backHome">← 首页</div>'
+  var h = __navTabsHtml('lists')
         + '<div class="back" id="resetLists" style="color:var(--sub)">⟳ 恢复默认列表</div>'
         + '<div class="lgrid">';
   for(var i=0;i<LISTS.length;i++){
@@ -1814,7 +1836,9 @@ function renderListWorks(lid, skipHist){
   /* 清理已不在当前列表里的已选项 */
   __batchSel = __batchSel.filter(function(rj){ return l.works.indexOf(rj) >= 0; });
 
-  var h = '<div class="work"><div class="back" id="backLists">← 列表</div>'
+  var h = '<div class="work"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+    + '<div class="back" id="backLists">← 我的列表</div>'
+    + '<div class="back" id="backHome" style="color:var(--sub)">⌂ 返回主页</div></div>'
     + '<div class="lhead"><div>'
     + '<h2 style="font-size:17px;margin:2px 0 4px">'+esc(l.name)+'</h2>'
     + '<div style="font-size:12.5px;color:var(--sub)">By '+esc(l.by)+' · '+list.length+' works</div>'
@@ -2022,6 +2046,7 @@ try{
                    L:function(){ return LISTS; } };
 }catch(e){}
 (function(){
+  if(ttl){ ttl.title = '返回主页'; ttl.onclick = function(){ __clearSearch(); renderHome(); }; }
   var b = document.getElementById('btnLists');
   if(b) b.onclick = function(){ renderLists(); };
   var x = document.getElementById('asClose');
@@ -2135,6 +2160,7 @@ try{
     }
   }).catch(function(){ window.__pipHttpsReady = false; });
 }catch(e){ window.__pipHttpsReady = false; }
+__clearSearch();
 renderHome(true);
 
 /* ---------- 从 HTTP 切到 HTTPS 后恢复播放，并提示点开系统画中画 ---------- */
