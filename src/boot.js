@@ -18,7 +18,7 @@
     if (r) r.onclick = function(){ location.reload(); };
     var c = document.getElementById('bootClear');
     if (c) c.onclick = function(){
-      try{ localStorage.removeItem('asmr_lists_v1'); }catch(e){}
+      try{ localStorage.removeItem('asmr_lists_v1'); localStorage.removeItem('asmr_lists_v2'); }catch(e){}
       try{ if (window.caches) caches.keys().then(function(k){ k.forEach(function(x){ caches.delete(x); }); }); }catch(e){}
       location.href = location.pathname + '?r=' + Date.now();
     };
