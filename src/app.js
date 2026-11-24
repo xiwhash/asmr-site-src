@@ -128,22 +128,43 @@ var __curView = { type:'home', lid:null, rj:null };
 var __fromListId = null;
 
 var __toastEl = null, __toastTimer = null;
-function showToast(msg){
+function showToast(msg, actLabel, actFn){
   try{
     if(!__toastEl){
       __toastEl = document.createElement('div');
       __toastEl.id = 'toast';
       document.body.appendChild(__toastEl);
     }
-    __toastEl.textContent = String(msg || '');
+    __toastEl.innerHTML = '';
+    var sp = document.createElement('span');
+    sp.textContent = String(msg || '');
+    __toastEl.appendChild(sp);
+    if(actLabel && typeof actFn === 'function'){
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'toast-act';
+      btn.textContent = actLabel;
+      btn.onclick = function(ev){
+        ev.stopPropagation();
+        if(__toastEl) __toastEl.classList.remove('on', 'has-act');
+        try{ actFn(); }catch(e){}
+      };
+      __toastEl.appendChild(btn);
+      __toastEl.classList.add('has-act');
+    } else {
+      __toastEl.classList.remove('has-act');
+    }
     __toastEl.classList.add('on');
     if(__toastTimer) clearTimeout(__toastTimer);
-    __toastTimer = setTimeout(function(){ if(__toastEl) __toastEl.classList.remove('on'); }, 2200);
+    __toastTimer = setTimeout(function(){
+      if(__toastEl) __toastEl.classList.remove('on', 'has-act');
+    }, actLabel ? 3600 : 2200);
   }catch(e){}
 }
 
 /* ---------- 首页 ---------- */
 function renderHome(skipHist){
+  if(typeof __exitBatch === 'function') __exitBatch();
   __fromListId = null;
   __curView = { type:'home', lid:null, rj:null };
   ttl.textContent = '我的音声库';
@@ -262,6 +283,7 @@ function __autoPath(w){
 function renderWork(rj, skipHist, path){
   var w = works.find(function(x){return x.rj===rj;});
   if(!w) return;
+  if(typeof __exitBatch === 'function') __exitBatch();
   __curView = { type:'work', lid:__fromListId, rj:rj };
   ttl.textContent = rj;
   if (!skipHist && window.__hist) window.__hist.push('work', rj);
@@ -540,37 +562,48 @@ view.addEventListener('click', function(ev){
   while(el && el !== view){
     if(el.id === 'backHome'){ renderHome(); return; }
     if(el.id === 'backLists'){ renderLists(true); return; }
-    if(el.id === 'backToList'){ renderListWorks(el.dataset.lid, true); return; }
+    if(el.id === 'backToList'){ renderListWorks(el.dataset.lid || el.getAttribute('data-lid'), true); return; }
+    if(el.id === 'batchModeBtn'){ __toggleBatchMode(); return; }
     if(el.id === 'resetLists'){
-      try{ localStorage.removeItem(LK); }catch(e){}
+      try{ localStorage.removeItem(LK); localStorage.removeItem(LK_LEGACY); }catch(e){}
       __lLoad();
       renderLists(true);
-      showToast('已恢复服务器列表');
+      showToast('已恢复服务器默认列表');
       return;
     }
     if(el.id === 'addToList'){ openAddSheet(el.dataset.rj || el.getAttribute('data-rj')); return; }
-    if(el.id === 'moveToList'){ openMoveSheet(el.dataset.rj || el.getAttribute('data-rj'), null); return; }
+    if(el.id === 'moveToList'){ openMoveSheet([el.dataset.rj || el.getAttribute('data-rj')], null); return; }
+    if(el.classList && el.classList.contains('wlist-tag')){
+      var tagLid = el.dataset.lid || el.getAttribute('data-lid');
+      if(tagLid){ renderListWorks(tagLid); return; }
+    }
     if(el.classList && el.classList.contains('mv')){
       ev.stopPropagation();
-      openMoveSheet(el.dataset.mv || el.getAttribute('data-mv'), el.dataset.lid || el.getAttribute('data-lid'));
+      openMoveSheet([el.dataset.mv || el.getAttribute('data-mv')], el.dataset.lid || el.getAttribute('data-lid'));
       return;
     }
     if(el.classList && el.classList.contains('rmv')){
       ev.stopPropagation();
-      var rmLid = el.dataset.lid, rmRj = el.dataset.rmv;
+      var rmLid = el.dataset.lid || el.getAttribute('data-lid');
+      var rmRj = el.dataset.rmv || el.getAttribute('data-rmv');
       var rmList = __lById(rmLid);
-      __lToggle(rmLid, rmRj);
+      __lRemoveMany([rmRj], rmLid);
       renderListWorks(rmLid, true);
       if(rmList) showToast('已从「' + rmList.name + '」移除');
       return;
     }
     if(el.classList && el.classList.contains('lcard')){
       if(el.id === 'lNewCard'){ openNewListModal(); return; }
-      renderListWorks(el.dataset.lid); return;
+      renderListWorks(el.dataset.lid || el.getAttribute('data-lid')); return;
     }
     if(el.classList && el.classList.contains('card')){
+      var cardRj = el.dataset.rj || el.getAttribute('data-rj');
+      if(__curView && __curView.type === 'list' && __batchMode){
+        __toggleBatchSelect(cardRj, el);
+        return;
+      }
       __fromListId = (__curView && __curView.type === 'list') ? __curView.lid : null;
-      renderWork(el.dataset.rj);
+      renderWork(cardRj);
       return;
     }
     if(el.classList && el.classList.contains('track')){ playTrack(el.dataset.rj, +el.dataset.i); openFull(); return; }
@@ -1453,9 +1486,12 @@ setInterval(function(){
 
 /* 键盘 */
 
-/* ==================== 列表（playlists） ==================== */
-var LK = 'asmr_lists_v1';
-var LISTS = [];
+/* ==================== 列表与移动引擎（v2：零丢失快照架构） ==================== */
+var LK = 'asmr_lists_v2';
+var LK_LEGACY = 'asmr_lists_v1';
+var __lState = { version: 2, serverSig: '', serverSnap: {}, lists: [] };
+var LISTS = __lState.lists;
+
 function __lUniq(arr){
   var out = [], seen = {};
   (arr || []).forEach(function(x){
@@ -1464,113 +1500,156 @@ function __lUniq(arr){
   });
   return out;
 }
-function __lClone(x){
-  return {
-    id: x.id,
-    name: x.name,
-    by: x.by || '谢hhhh',
-    works: __lUniq(x.works),
-    imported: Array.isArray(x.imported) ? __lUniq(x.imported) : null,
-    added: Array.isArray(x.added) ? __lUniq(x.added) : null,
-    removed: __lUniq(x.removed)
-  };
-}
-/* 新的服务器列表要标记其初始成员。否则以后服务器把作品挪到另一组时，
-   浏览器会把旧组里的记录误当成“本地新增”而一直保留。 */
-function __lFromServer(x){
-  var l = __lClone(x);
-  l.imported = l.works.slice();
-  l.added = [];
-  l.removed = [];
-  return l;
-}
-function __lSave(){ try{ localStorage.setItem(LK, JSON.stringify(LISTS)); }catch(e){} }
-function __lLoad(){
-  var base = (window.__LISTS__||[]).map(__lClone);
-  var loc = null;
-  try{ loc = JSON.parse(localStorage.getItem(LK)||'null'); }catch(e){}
-  if(!loc || !loc.length){ LISTS = base.map(__lFromServer); __lSave(); return; }
-  var out = [], seenId = {};
-  loc.forEach(function(item){
-    if(!item || !item.id || seenId[item.id]) return;
-    seenId[item.id] = 1;
-    out.push(__lClone(item));
-  });
-  var __nm = function(s){ return String(s || '').trim().toLowerCase(); };
-  /* 收集旧缓存中被移出其他列表的作品，升级时防止本地已移入目标列表的作品被误删 */
-  var removedAnywhere = {};
-  out.forEach(function(l){
-    (l.removed || []).forEach(function(rj){ removedAnywhere[rj] = 1; });
-  });
-  base.forEach(function(b){
-    var mine = out.filter(function(l){ return l.id === b.id; })[0];
-    if(!mine){                                   /* 名字相同 = 同一个列表（用户自己建过的） */
-      var bn = __nm(b.name);
-      mine = out.filter(function(l){ return __nm(l.name) === bn; })[0] || null;
-    }
-    if(!mine){ out.push(__lFromServer(b)); return; }
-    var hasImp = Array.isArray(mine.imported);
-    var hasAdded = Array.isArray(mine.added);
-    var oldServer = hasImp ? mine.imported.slice() : mine.works.slice();
-    mine.removed = __lUniq(mine.removed);
-    var localAdded = hasAdded ? mine.added.slice() : [];
-    /* 兼容旧缓存（缺少 added 字段）：把明确不在旧服务器列表里、或从其它列表移过来的作品保留为本机新增 */
-    mine.works.forEach(function(rj){
-      if(localAdded.indexOf(rj) >= 0) return;
-      if(hasImp && oldServer.indexOf(rj) < 0){ localAdded.push(rj); return; }
-      if(!hasImp && b.works.indexOf(rj) < 0 && removedAnywhere[rj]){ localAdded.push(rj); }
-    });
-    /* 仅当已知上一次服务器名单（hasImp）且服务器本次新把某作品移入当前列表时，才清除旧的 removed 屏蔽记录 */
-    if(hasImp){
-      b.works.forEach(function(rj){
-        if(oldServer.indexOf(rj) < 0){
-          var rk = mine.removed.indexOf(rj);
-          if(rk >= 0) mine.removed.splice(rk, 1);
-        }
-      });
-    }
-    /* 本机新增优先于 removed，避免同一作品在两个数组冲突 */
-    localAdded = localAdded.filter(function(rj){ return mine.removed.indexOf(rj) < 0; });
-    mine.imported = b.works.slice();
-    /* 已被服务器收录的不再滞留在 added，未收录的继续保留在 added 防止刷新丢失 */
-    mine.added = localAdded.filter(function(rj){ return b.works.indexOf(rj) < 0; });
-    var serverKeep = b.works.filter(function(rj){ return mine.removed.indexOf(rj) < 0; });
-    var merged = [];
-    localAdded.forEach(function(rj){ if(merged.indexOf(rj) < 0) merged.push(rj); });
-    serverKeep.forEach(function(rj){ if(merged.indexOf(rj) < 0) merged.push(rj); });
-    mine.works = merged;
-  });
-  out.forEach(function(l){
-    if(!Array.isArray(l.imported)) l.imported = [];
-    if(!Array.isArray(l.added)) l.added = [];
-    if(!Array.isArray(l.removed)) l.removed = [];
-  });
-  LISTS = out;
-  __lSave();
-}
-function __lById(id){ return LISTS.filter(function(l){ return l.id === id; })[0] || null; }
-function __lNew(name){
-  var id = 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-  LISTS.push({ id:id, name:name, by:'谢hhhh', works:[], imported:[], added:[], removed:[] });
-  __lSave();
-  return id;
+function __lValidWork(rj){
+  var key = String(rj || '').trim();
+  if(!key) return false;
+  for(var i = 0; i < works.length; i++){ if(works[i].rj === key) return true; }
+  return false;
 }
 function __lFind(rj){
   var key = String(rj || '').trim();
   if(!key) return null;
-  return works.filter(function(x){ return x.rj === key; })[0] || null;
+  for(var i = 0; i < works.length; i++){ if(works[i].rj === key) return works[i]; }
+  return null;
+}
+function __lMakeList(x){
+  return {
+    id: String(x && x.id || ''),
+    name: String(x && x.name || '未命名列表'),
+    by: String(x && x.by || '谢hhhh'),
+    works: __lUniq(x && x.works).filter(__lValidWork)
+  };
+}
+function __lBuildServerSnap(rawBase){
+  var lists = (rawBase || []).map(__lMakeList).filter(function(l){ return !!l.id; });
+  var snap = {};
+  lists.forEach(function(l){ snap[l.id] = l.works.slice(); });
+  var sig = JSON.stringify(lists.map(function(l){ return [l.id, l.name, l.works]; }));
+  return { lists: lists, snap: snap, sig: sig };
+}
+function __lSave(){
+  var ok = false;
+  try{
+    __lState.version = 2;
+    __lState.lists = LISTS;
+    var raw = JSON.stringify(__lState);
+    localStorage.setItem(LK, raw);
+    ok = (localStorage.getItem(LK) === raw);
+  }catch(e){ ok = false; }
+  return ok;
+}
+function __lLoad(){
+  var srv = __lBuildServerSnap(window.__LISTS__ || []);
+  var saved = null;
+  try{ saved = JSON.parse(localStorage.getItem(LK) || 'null'); }catch(e){ saved = null; }
+
+  /* 首次使用 v2（或旧版升级）：以服务器列表为准初始化，避免旧 v1 脏缓存隐藏作品；
+     仅迁移旧 v1 中的用户自建列表（id 与名称均不与服务器冲突的列表）。 */
+  if(!saved || saved.version !== 2 || !Array.isArray(saved.lists) || !saved.lists.length){
+    var initLists = srv.lists.map(__lMakeList);
+    try{
+      var oldV1 = JSON.parse(localStorage.getItem(LK_LEGACY) || 'null');
+      if(Array.isArray(oldV1)){
+        var srvIds = {}, srvNames = {};
+        initLists.forEach(function(l){
+          srvIds[l.id] = 1;
+          srvNames[String(l.name).trim().toLowerCase()] = 1;
+        });
+        oldV1.forEach(function(ol){
+          if(!ol || !ol.id || !ol.name) return;
+          var nm = String(ol.name).trim().toLowerCase();
+          if(srvIds[ol.id] || srvNames[nm]) return;
+          srvIds[ol.id] = 1;
+          srvNames[nm] = 1;
+          initLists.push(__lMakeList(ol));
+        });
+      }
+    }catch(e){}
+    __lState = { version: 2, serverSig: srv.sig, serverSnap: srv.snap, lists: initLists };
+    LISTS = __lState.lists;
+    __lSave();
+    return;
+  }
+
+  /* 清洗已保存的列表（去重、去坏项），但不改动成员与顺序 */
+  var seenIds = {};
+  var cleanLists = [];
+  saved.lists.forEach(function(item){
+    var l = __lMakeList(item);
+    if(!l.id || seenIds[l.id]) return;
+    seenIds[l.id] = 1;
+    cleanLists.push(l);
+  });
+
+  /* 关键：服务器列表未变化时（常规 F5 刷新），100% 原样恢复本地列表，绝不做任何覆盖或合并！ */
+  if(saved.serverSig === srv.sig){
+    __lState = {
+      version: 2,
+      serverSig: srv.sig,
+      serverSnap: saved.serverSnap || srv.snap,
+      lists: cleanLists
+    };
+    LISTS = __lState.lists;
+    return;
+  }
+
+  /* 服务器 lists.json 确实发生变更时，仅应用 oldSnap -> srv.snap 的精确增量，保留所有本机移动 */
+  var oldSnap = (saved.serverSnap && typeof saved.serverSnap === 'object') ? saved.serverSnap : {};
+  var __nm = function(s){ return String(s || '').trim().toLowerCase(); };
+  srv.lists.forEach(function(b){
+    var mine = cleanLists.filter(function(l){ return l.id === b.id; })[0];
+    if(!mine){
+      var bn = __nm(b.name);
+      mine = cleanLists.filter(function(l){ return __nm(l.name) === bn; })[0] || null;
+    }
+    if(!mine){
+      cleanLists.push(__lMakeList(b));
+      return;
+    }
+    var prevSrv = Array.isArray(oldSnap[b.id]) ? oldSnap[b.id] : [];
+    var addedBySrv = b.works.filter(function(rj){ return prevSrv.indexOf(rj) < 0; });
+    var removedBySrv = prevSrv.filter(function(rj){ return b.works.indexOf(rj) < 0; });
+    if(removedBySrv.length){
+      mine.works = mine.works.filter(function(rj){ return removedBySrv.indexOf(rj) < 0; });
+    }
+    for(var i = addedBySrv.length - 1; i >= 0; i--){
+      var rj = addedBySrv[i];
+      if(mine.works.indexOf(rj) < 0) mine.works.unshift(rj);
+    }
+  });
+
+  __lState = { version: 2, serverSig: srv.sig, serverSnap: srv.snap, lists: cleanLists };
+  LISTS = __lState.lists;
+  __lSave();
+}
+
+function __lById(id){
+  for(var i = 0; i < LISTS.length; i++){ if(LISTS[i].id === id) return LISTS[i]; }
+  return null;
+}
+function __lNew(name){
+  var id = 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  LISTS.push({ id:id, name:String(name || '').trim(), by:'谢hhhh', works:[] });
+  __lSave();
+  return id;
 }
 function __lCover(l){
   for(var i=0;i<l.works.length;i++){ var w = __lFind(l.works[i]); if(w && w.cover) return w.cover; }
   for(var j=0;j<works.length;j++){ if(works[j].cover) return works[j].cover; }
   return '';
 }
-function __lCount(l){ var n=0; for(var i=0;i<l.works.length;i++){ if(__lFind(l.works[i])) n++; } return n; }
+function __lCount(l){
+  var n = 0;
+  for(var i = 0; i < l.works.length; i++){ if(__lFind(l.works[i])) n++; }
+  return n;
+}
 function __lListsOf(rj){ return LISTS.filter(function(l){ return l.works.indexOf(rj) >= 0; }); }
 function __workListsHtml(rj){
   var ls = __lListsOf(rj);
   if(!ls.length) return '';
-  return ls.map(function(l){ return '<span class="wlist-tag">'+esc(l.name)+'</span>'; }).join('');
+  return ls.map(function(l){
+    return '<span class="wlist-tag" data-lid="'+esc(l.id)+'">'+esc(l.name)+'</span>';
+  }).join('');
 }
 function __syncWorkListsUi(rj){
   var el = document.getElementById('workLists');
@@ -1579,13 +1658,134 @@ function __syncWorkListsUi(rj){
   }
 }
 
+/* 原子增删移操作：先校验目标存在再改数据，最后落盘并校验 */
+function __lAdd(lid, rj){
+  rj = String(rj || '').trim();
+  var dst = __lById(lid);
+  if(!dst || !rj || !__lValidWork(rj)) return false;
+  var idx = dst.works.indexOf(rj);
+  if(idx >= 0) dst.works.splice(idx, 1);
+  dst.works.unshift(rj);
+  return true;
+}
+function __lRemoveOne(lid, rj){
+  rj = String(rj || '').trim();
+  var l = __lById(lid);
+  if(!l || !rj) return false;
+  var idx = l.works.indexOf(rj);
+  if(idx >= 0){ l.works.splice(idx, 1); return true; }
+  return false;
+}
+function __lRemoveMany(rjs, lid){
+  var list = __lUniq(rjs);
+  var count = 0;
+  list.forEach(function(rj){ if(__lRemoveOne(lid, rj)) count++; });
+  if(count > 0) __lSave();
+  return count;
+}
+function __lToggle(lid, rj){
+  rj = String(rj || '').trim();
+  var l = __lById(lid);
+  if(!l || !rj || !__lValidWork(rj)) return false;
+  var added = false;
+  if(l.works.indexOf(rj) >= 0){
+    __lRemoveOne(lid, rj);
+    added = false;
+  } else {
+    __lAdd(lid, rj);
+    added = true;
+  }
+  __lSave();
+  return added;
+}
+function __lMoveMany(rjs, toLid, fromLid){
+  var dst = __lById(toLid);
+  if(!dst) return 0;
+  var items = __lUniq(rjs).filter(__lValidWork);
+  if(!items.length) return 0;
+  if(fromLid && fromLid === toLid) return 0;
+
+  var moved = [];
+  items.forEach(function(rj){
+    var changed = false;
+    if(fromLid){
+      if(__lRemoveOne(fromLid, rj)) changed = true;
+      if(dst.works.indexOf(rj) < 0) changed = true;
+    } else {
+      LISTS.forEach(function(l){
+        if(l.id !== toLid && __lRemoveOne(l.id, rj)) changed = true;
+      });
+      if(dst.works.indexOf(rj) < 0) changed = true;
+    }
+    if(changed) moved.push(rj);
+  });
+
+  if(!moved.length) return 0;
+  /* 保持选中顺序置顶插入目标列表 */
+  for(var i = moved.length - 1; i >= 0; i--){
+    __lAdd(toLid, moved[i]);
+  }
+  var saved = __lSave();
+  if(!saved){
+    showToast('本地存储受限，刷新后可能无法保留更改');
+  }
+  return moved.length;
+}
+function __lMove(fromLid, toLid, rj){
+  return __lMoveMany([rj], toLid, fromLid) > 0;
+}
+
+/* ---------- 批量选择移动模式 ---------- */
+var __batchMode = false;
+var __batchSel = [];
+
+function __updateBatchBar(){
+  var bar = document.getElementById('batchBar');
+  var info = document.getElementById('bbInfo');
+  if(!bar) return;
+  if(__batchMode && __curView && __curView.type === 'list'){
+    bar.classList.add('on');
+    bar.setAttribute('aria-hidden', 'false');
+    if(info) info.textContent = '已选 ' + __batchSel.length + ' 项';
+  } else {
+    bar.classList.remove('on');
+    bar.setAttribute('aria-hidden', 'true');
+  }
+}
+function __exitBatch(){
+  __batchMode = false;
+  __batchSel = [];
+  __updateBatchBar();
+}
+function __toggleBatchMode(){
+  if(!__curView || __curView.type !== 'list' || !__curView.lid) return;
+  __batchMode = !__batchMode;
+  __batchSel = [];
+  renderListWorks(__curView.lid, true);
+}
+function __toggleBatchSelect(rj, cardEl){
+  rj = String(rj || '').trim();
+  if(!rj) return;
+  var idx = __batchSel.indexOf(rj);
+  if(idx >= 0) __batchSel.splice(idx, 1);
+  else __batchSel.push(rj);
+  if(cardEl){
+    var on = idx < 0;
+    cardEl.classList.toggle('sel', on);
+    var chk = cardEl.querySelector('.chk');
+    if(chk) chk.textContent = on ? '✓' : '';
+  }
+  __updateBatchBar();
+}
+
 function renderLists(skipHist){
+  __exitBatch();
   __fromListId = null;
   __curView = { type:'lists', lid:null, rj:null };
   ttl.textContent = '我的列表';
   if(!skipHist && window.__hist) window.__hist.push('lists');
   var h = '<div class="back" id="backHome">← 首页</div>'
-        + '<div class="back" id="resetLists" style="color:var(--sub)">⟳ 恢复服务器列表</div>'
+        + '<div class="back" id="resetLists" style="color:var(--sub)">⟳ 恢复默认列表</div>'
         + '<div class="lgrid">';
   for(var i=0;i<LISTS.length;i++){
     var l = LISTS[i], cv = __lCover(l);
@@ -1601,102 +1801,63 @@ function renderLists(skipHist){
 }
 function renderListWorks(lid, skipHist){
   var l = __lById(lid);
-  if(!l){ renderLists(skipHist); return; }
+  if(!l){ __exitBatch(); renderLists(skipHist); return; }
+  if(!__curView || __curView.type !== 'list' || __curView.lid !== lid){
+    __batchMode = false;
+    __batchSel = [];
+  }
   __fromListId = lid;
   __curView = { type:'list', lid:lid, rj:null };
   ttl.textContent = l.name;
   if(!skipHist && window.__hist) window.__hist.push('list', lid);
   var list = l.works.map(__lFind).filter(Boolean);
+  /* 清理已不在当前列表里的已选项 */
+  __batchSel = __batchSel.filter(function(rj){ return l.works.indexOf(rj) >= 0; });
+
   var h = '<div class="work"><div class="back" id="backLists">← 列表</div>'
+    + '<div class="lhead"><div>'
     + '<h2 style="font-size:17px;margin:2px 0 4px">'+esc(l.name)+'</h2>'
-    + '<div style="font-size:12.5px;color:var(--sub);margin-bottom:10px">By '+esc(l.by)+' · '+list.length+' works</div>'
+    + '<div style="font-size:12.5px;color:var(--sub)">By '+esc(l.by)+' · '+list.length+' works</div>'
+    + '</div>'
+    + (list.length ? '<div class="lhead-acts"><button type="button" class="lbtn'+(__batchMode?' on':'')+'" id="batchModeBtn">'+(__batchMode?'完成选择':'批量移动')+'</button></div>' : '')
+    + '</div>'
     + '<div class="grid" style="padding:0">';
   for(var i=0;i<list.length;i++){
     var w = list[i];
-    h += '<div class="card" data-rj="'+esc(w.rj)+'">'
+    var isSel = __batchMode && __batchSel.indexOf(w.rj) >= 0;
+    h += '<div class="card'+(isSel?' sel':'')+'" data-rj="'+esc(w.rj)+'">'
       + (w.cover?'<img class="thumb" loading="lazy" src="'+esc(w.cover)+'" alt="">':'<div class="thumb"></div>')
       + '<div class="meta"><div class="t">'+esc(w.title)+'</div>'
-      + '<div class="s"><span class="rj">'+esc(w.rj)+'</span><span>'+w.n+' 音轨</span></div></div>'
-      + '<div class="card-acts">'
-      + '<button type="button" class="mv" title="移动到其他列表" aria-label="移动到其他列表" data-mv="'+esc(w.rj)+'" data-lid="'+esc(l.id)+'">'
-      + '<svg viewBox="0 0 24 24"><path d="M6.99 11 3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/></svg></button>'
-      + '<button type="button" class="rmv" title="从此列表移除" aria-label="从此列表移除" data-rmv="'+esc(w.rj)+'" data-lid="'+esc(l.id)+'">−</button>'
-      + '</div></div>';
+      + '<div class="s"><span class="rj">'+esc(w.rj)+'</span><span>'+w.n+' 音轨</span></div></div>';
+    if(__batchMode){
+      h += '<div class="chk">'+(isSel?'✓':'')+'</div>';
+    } else {
+      h += '<div class="card-acts">'
+        + '<button type="button" class="mv" title="移动到其他列表" aria-label="移动到其他列表" data-mv="'+esc(w.rj)+'" data-lid="'+esc(l.id)+'">'
+        + '<svg viewBox="0 0 24 24"><path d="M6.99 11 3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/></svg>移动</button>'
+        + '<button type="button" class="rmv" title="从此列表移除" aria-label="从此列表移除" data-rmv="'+esc(w.rj)+'" data-lid="'+esc(l.id)+'">−</button>'
+        + '</div>';
+    }
+    h += '</div>';
   }
   if(!list.length) h += '<div class="empty" style="grid-column:1/-1">这个列表还是空的</div>';
   h += '</div></div>';
   view.innerHTML = h;
+  __updateBatchBar();
 }
-var __sheetRj = null;
+
+/* ---------- 移动 / 加入列表弹窗 ---------- */
+var __sheetRjs = [];
 var __sheetFromLid = null;
 var __sheetMode = 'toggle';
 
-function __lAdd(lid, rj){
-  rj = String(rj || '').trim();
-  if(!rj) return false;
-  var l = __lById(lid); if(!l) return false;
-  var i = l.works.indexOf(rj);
-  if(i < 0) l.works.unshift(rj);
-  l.added = l.added || [];
-  if(l.added.indexOf(rj) < 0) l.added.unshift(rj);
-  if(l.removed){
-    var k = l.removed.indexOf(rj);
-    if(k >= 0) l.removed.splice(k, 1);
-  }
-  return true;
-}
-function __lRemove(lid, rj){
-  rj = String(rj || '').trim();
-  if(!rj) return false;
-  var l = __lById(lid); if(!l) return false;
-  var i = l.works.indexOf(rj);
-  if(i >= 0) l.works.splice(i, 1);
-  if(l.added){
-    var a = l.added.indexOf(rj);
-    if(a >= 0) l.added.splice(a, 1);
-  }
-  l.removed = l.removed || [];
-  if(l.removed.indexOf(rj) < 0) l.removed.push(rj);
-  return true;
-}
-function __lToggle(lid, rj){
-  rj = String(rj || '').trim();
-  var l = __lById(lid); if(!l || !rj) return false;
-  var added = false;
-  if(l.works.indexOf(rj) >= 0){
-    __lRemove(lid, rj);
-    added = false;
-  } else {
-    __lAdd(lid, rj);
-    added = true;
-  }
-  __lSave();
-  return added;
-}
-function __lMove(fromLid, toLid, rj){
-  rj = String(rj || '').trim();
-  var dst = __lById(toLid);
-  if(!dst || !rj) return false;
-  if(fromLid){
-    if(fromLid === toLid) return false;
-    __lRemove(fromLid, rj);
-  } else {
-    var others = LISTS.filter(function(l){ return l.id !== toLid && l.works.indexOf(rj) >= 0; });
-    if(!others.length && dst.works.indexOf(rj) >= 0) return false;
-    others.forEach(function(l){ __lRemove(l.id, rj); });
-  }
-  __lAdd(toLid, rj);
-  __lSave();
-  return true;
-}
-
-function __afterListChange(rj){
+function __afterListChange(rjs){
   if(__curView && __curView.type === 'list' && __curView.lid){
     renderListWorks(__curView.lid, true);
   } else if(__curView && __curView.type === 'lists'){
     renderLists(true);
-  } else if(__curView && __curView.type === 'work' && __curView.rj === rj){
-    __syncWorkListsUi(rj);
+  } else if(__curView && __curView.type === 'work' && __curView.rj){
+    if(!rjs || rjs.indexOf(__curView.rj) >= 0) __syncWorkListsUi(__curView.rj);
   }
 }
 
@@ -1709,37 +1870,66 @@ function __hideSheetForm(){
   if(inp) inp.value = '';
 }
 
+function __finishMoveUi(targetList, rjs, movedCount){
+  closeAddSheet();
+  __exitBatch();
+  if(__curView && __curView.type === 'work' && rjs.length === 1 && __curView.rj === rjs[0]){
+    if(__fromListId && __fromListId !== targetList.id){
+      __fromListId = targetList.id;
+      renderWork(rjs[0], true);
+    } else {
+      __syncWorkListsUi(rjs[0]);
+    }
+  } else {
+    __afterListChange(rjs);
+  }
+  var label = movedCount > 1
+    ? ('已移动 ' + movedCount + ' 个音频到「' + targetList.name + '」')
+    : ('已移动到「' + targetList.name + '」');
+  showToast(label, '去查看', function(){ renderListWorks(targetList.id); });
+}
+
 function __renderSheet(){
-  var rj = __sheetRj;
+  var rjs = __sheetRjs.slice();
   var box = document.getElementById('asList');
   var title = document.getElementById('asTitle');
-  if(!box || !rj) return;
-  if(title) title.textContent = (__sheetMode === 'move') ? ('移动到其他列表 · ' + rj) : ('加入列表 · ' + rj);
+  var sub = document.getElementById('asSub');
+  if(!box || !rjs.length) return;
+  var singleRj = rjs.length === 1 ? rjs[0] : null;
+  var singleWork = singleRj ? __lFind(singleRj) : null;
+  if(title){
+    title.textContent = (__sheetMode === 'move')
+      ? (rjs.length > 1 ? ('移动 ' + rjs.length + ' 个音频到其他列表') : '移动到其他列表')
+      : '加入列表';
+  }
+  if(sub){
+    sub.textContent = singleWork
+      ? (singleWork.rj + ' · ' + singleWork.title)
+      : (rjs.length > 1 ? ('已选择 ' + rjs.length + ' 个音频') : '');
+  }
   box.innerHTML = '';
   LISTS.forEach(function(l){
-    var on = l.works.indexOf(rj) >= 0;
+    var on = singleRj ? (l.works.indexOf(singleRj) >= 0) : false;
     var row = document.createElement('div');
     row.className = 'as-row';
     if(__sheetMode === 'move'){
-      var isSrc = __sheetFromLid ? (l.id === __sheetFromLid) : on;
+      var isSrc = __sheetFromLid ? (l.id === __sheetFromLid) : (singleRj ? (on && __lListsOf(singleRj).length === 1) : false);
+      if(isSrc) row.className += ' disabled';
       row.innerHTML = '<span class="as-tick">'+(isSrc?'●':'→')+'</span>'
         + '<span class="as-n">'+esc(l.name)+'</span>'
-        + (isSrc ? '<span class="as-cur">当前</span>' : '')
+        + (isSrc ? '<span class="as-cur">当前列表</span>' : '')
         + '<span class="as-c">'+__lCount(l)+'</span>';
       row.onclick = function(){
-        var ok = __lMove(__sheetFromLid, l.id, rj);
-        if(!ok){
+        if(isSrc){
           showToast('已在「' + l.name + '」中');
           return;
         }
-        closeAddSheet();
-        if(__curView && __curView.type === 'work' && __fromListId && __fromListId !== l.id){
-          __fromListId = l.id;
-          renderWork(rj, true);
+        var n = __lMoveMany(rjs, l.id, __sheetFromLid);
+        if(n > 0){
+          __finishMoveUi(l, rjs, n);
         } else {
-          __afterListChange(rj);
+          showToast('已在「' + l.name + '」中');
         }
-        showToast('已移动到「' + l.name + '」');
       };
     } else {
       row.innerHTML = '<span class="as-tick">'+(on?'✓':'')+'</span>'
@@ -1749,20 +1939,13 @@ function __renderSheet(){
       row.onclick = function(ev){
         if(ev.target && ev.target.classList && ev.target.classList.contains('as-mv')){
           ev.stopPropagation();
-          __lMove(null, l.id, rj);
-          closeAddSheet();
-          if(__curView && __curView.type === 'work' && __fromListId && __fromListId !== l.id){
-            __fromListId = l.id;
-            renderWork(rj, true);
-          } else {
-            __afterListChange(rj);
-          }
-          showToast('已移动到「' + l.name + '」');
+          var n = __lMoveMany([singleRj], l.id, null);
+          if(n > 0) __finishMoveUi(l, [singleRj], n);
           return;
         }
-        var added = __lToggle(l.id, rj);
+        var added = __lToggle(l.id, singleRj);
         __renderSheet();
-        __afterListChange(rj);
+        __afterListChange([singleRj]);
         showToast(added ? ('已加入「' + l.name + '」') : ('已从「' + l.name + '」移除'));
       };
     }
@@ -1776,23 +1959,25 @@ function __renderSheet(){
 
 function openAddSheet(rj){
   rj = String(rj || '').trim();
-  if(!rj) return;
-  __sheetRj = rj;
+  if(!rj || !__lValidWork(rj)) return;
+  __sheetRjs = [rj];
   __sheetFromLid = null;
   __sheetMode = 'toggle';
   __renderSheet();
 }
-function openMoveSheet(rj, fromLid){
-  rj = String(rj || '').trim();
-  if(!rj) return;
+function openMoveSheet(rjs, fromLid){
+  var arr = Array.isArray(rjs) ? rjs : [rjs];
+  var clean = __lUniq(arr).filter(__lValidWork);
+  if(!clean.length) return;
   var src = fromLid ? __lById(fromLid) : null;
-  __sheetRj = rj;
-  __sheetFromLid = (src && src.works.indexOf(rj) >= 0) ? fromLid : null;
+  var validFrom = (src && clean.some(function(rj){ return src.works.indexOf(rj) >= 0; })) ? fromLid : null;
+  __sheetRjs = clean;
+  __sheetFromLid = validFrom;
   __sheetMode = 'move';
   __renderSheet();
 }
 function closeAddSheet(){
-  __sheetRj = null;
+  __sheetRjs = [];
   __sheetFromLid = null;
   __sheetMode = 'toggle';
   __hideSheetForm();
@@ -1833,7 +2018,8 @@ function __lAsk(){
 __lLoad();
 try{
   window.__nav = { home:renderHome, work:renderWork, play:playTrack, full:openFull,
-                   lists:renderLists, list:renderListWorks, move:__lMove, L:function(){ return LISTS; } };
+                   lists:renderLists, list:renderListWorks, move:__lMove, moveMany:__lMoveMany,
+                   L:function(){ return LISTS; } };
 }catch(e){}
 (function(){
   var b = document.getElementById('btnLists');
@@ -1845,6 +2031,28 @@ try{
   var sh = document.getElementById('addSheet');
   if(sh) sh.addEventListener('click', function(e){ if(e.target === sh) closeAddSheet(); });
 
+  var bbMove = document.getElementById('bbMove');
+  var bbDel = document.getElementById('bbDel');
+  var bbCancel = document.getElementById('bbCancel');
+  if(bbMove) bbMove.onclick = function(){
+    if(!__batchSel.length){ showToast('请先选择要移动的音频'); return; }
+    openMoveSheet(__batchSel.slice(), __curView && __curView.lid);
+  };
+  if(bbDel) bbDel.onclick = function(){
+    if(!__batchSel.length){ showToast('请先选择要移出的音频'); return; }
+    var lid = __curView && __curView.lid;
+    var l = __lById(lid);
+    var n = __lRemoveMany(__batchSel.slice(), lid);
+    __exitBatch();
+    if(lid) renderListWorks(lid, true);
+    if(n > 0 && l) showToast('已从「' + l.name + '」移出 ' + n + ' 个音频');
+  };
+  if(bbCancel) bbCancel.onclick = function(){
+    var lid = __curView && __curView.lid;
+    __exitBatch();
+    if(lid) renderListWorks(lid, true);
+  };
+
   var af = document.getElementById('asNewForm');
   var ac = document.getElementById('asNewCancel');
   if(ac) ac.onclick = __hideSheetForm;
@@ -1854,23 +2062,17 @@ try{
     var name = String(inp ? inp.value : '').trim();
     if(!name) return;
     var id = __lNew(name);
-    var rj = __sheetRj, fromLid = __sheetFromLid, mode = __sheetMode;
-    if(rj){
+    var dst = __lById(id);
+    var rjs = __sheetRjs.slice(), fromLid = __sheetFromLid, mode = __sheetMode;
+    if(rjs.length){
       if(mode === 'move'){
-        __lMove(fromLid, id, rj);
-        closeAddSheet();
-        if(__curView && __curView.type === 'work' && __fromListId){
-          __fromListId = id;
-          renderWork(rj, true);
-        } else {
-          __afterListChange(rj);
-        }
-        showToast('已移动到「' + name + '」');
+        var n = __lMoveMany(rjs, id, fromLid);
+        if(dst) __finishMoveUi(dst, rjs, n || rjs.length);
       } else {
-        __lAdd(id, rj);
+        __lAdd(id, rjs[0]);
         __lSave();
         __renderSheet();
-        __afterListChange(rj);
+        __afterListChange(rjs);
         showToast('已创建并加入「' + name + '」');
       }
     } else {
