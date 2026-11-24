@@ -307,6 +307,7 @@ function renderWork(rj, skipHist, path){
   var w = works.find(function(x){return x.rj===rj;});
   if(!w) return;
   if(typeof __exitBatch === 'function') __exitBatch();
+  try{ if(typeof __loadSubs === 'function') __loadSubs(rj); }catch(e){}
   __curView = { type:'work', lid:__fromListId, rj:rj };
   ttl.textContent = rj;
   if (!skipHist && window.__hist) window.__hist.push('work', rj);
@@ -439,7 +440,7 @@ function playTrack(rj, i){
   if(!w) return;
   var t = w.tracks[i];
   var __lst = __listOf(w, i);
-  cur = { w:w, i:i, subs: subs[rj+'/'+String(i).padStart(3,'0')] || [], rows:[] };
+  cur = { w:w, i:i, subs: __subsFor(rj, i) || [], rows:[], subsLoading: !__subsReady(rj) };
   cur.list = __lst;
   au.src = __pfUrl(t.f) || t.f;
   try{ au.preload = 'auto'; }catch(e){}
@@ -470,6 +471,58 @@ function playTrack(rj, i){
   }
   /* 预热下一轨，切歌瞬发 */
   try{ var __nx = w.tracks[stepIdx(1)]; if(__nx && __nx.f !== t.f) __pfKick(__nx.f); }catch(e){}
+  /* 字幕按需加载：拉到后若仍是这一轨就刷新歌词 */
+  if(cur.subsLoading){
+    __loadSubs(rj).then(function(){
+      if(!cur.w || cur.w.rj !== rj || cur.i !== i) return;
+      cur.subs = __subsFor(rj, i) || [];
+      cur.subsLoading = false;
+      buildLyric();
+      if(full.classList.contains('on')){ curLine = -1; syncLyric(true); }
+      try{
+        if (FloatSub && FloatSub.on) FloatSub.set(textOfNow());
+        if (PiP && PiP.currentPiPStatus) PiP.flush();
+      }catch(e){}
+    });
+  }
+}
+
+/* ---------- 字幕按需加载（subs/<RJ>.json） ---------- */
+var __subCache = {}, __subPending = {};
+var __subv = D.subv || null;
+function __subsReady(rj){
+  if(!__subv) return true;                       /* 旧版内联数据：字幕已在页面里 */
+  if(!__subv[rj]) return true;                   /* 这部作品本来就没有字幕 */
+  return !!__subCache[rj];
+}
+function __subsFor(rj, i){
+  var k3 = String(i).padStart(3,'0');
+  if(subs && subs[rj+'/'+k3]) return subs[rj+'/'+k3];
+  var c = __subCache[rj];
+  return c ? (c[k3] || null) : null;
+}
+function __loadSubs(rj){
+  if(__subsReady(rj)) return Promise.resolve(__subCache[rj] || null);
+  if(__subPending[rj]) return __subPending[rj];
+  var url = 'subs/' + encodeURIComponent(rj) + '.json?v=' + __subv[rj];
+  var p = (function attempt(n){
+    return fetch(url, { cache:'force-cache' }).then(function(r){
+      if(!r.ok) throw new Error('http ' + r.status);
+      return r.json();
+    }).catch(function(err){
+      if(n < 2) return new Promise(function(res){ setTimeout(res, 800 * (n + 1)); }).then(function(){ return attempt(n + 1); });
+      throw err;
+    });
+  })(0).then(function(j){
+    __subCache[rj] = j || {};
+    delete __subPending[rj];
+    return __subCache[rj];
+  }).catch(function(){
+    delete __subPending[rj];
+    return null;
+  });
+  __subPending[rj] = p;
+  return p;
 }
 
 function buildLyric(){
@@ -484,7 +537,9 @@ function buildLyric(){
     document.getElementById('fDur').textContent = '0:00';
   }catch(e){}
   if(!cur.subs || !cur.subs.length){
-    box.innerHTML = '<div class="empty" style="padding:30px 10px">暂无字幕</div>';
+    box.innerHTML = cur.subsLoading
+      ? '<div class="empty" style="padding:30px 10px">字幕加载中…</div>'
+      : '<div class="empty" style="padding:30px 10px">暂无字幕</div>';
     return;
   }
   var frag = document.createDocumentFragment();
@@ -587,6 +642,24 @@ view.addEventListener('click', function(ev){
     if(el.id === 'backLists' || el.id === 'tabLists'){ renderLists(); return; }
     if(el.id === 'backToList'){ renderListWorks(el.dataset.lid || el.getAttribute('data-lid')); return; }
     if(el.id === 'batchModeBtn'){ __toggleBatchMode(); return; }
+    if(el.id === 'exportLists'){ __exportLists(); return; }
+    if(el.id === 'importLists'){
+      var fi = document.getElementById('importListsFile');
+      if(fi){ fi.value = ''; fi.click(); }
+      return;
+    }
+    if(el.id === 'renameListBtn'){ openNewListModal(el.dataset.lid || el.getAttribute('data-lid')); return; }
+    if(el.id === 'deleteListBtn'){ openDelListModal(el.dataset.lid || el.getAttribute('data-lid')); return; }
+    if(el.classList && el.classList.contains('ledit')){
+      ev.stopPropagation();
+      openNewListModal(el.dataset.lid || el.getAttribute('data-lid'));
+      return;
+    }
+    if(el.classList && el.classList.contains('ldel')){
+      ev.stopPropagation();
+      openDelListModal(el.dataset.lid || el.getAttribute('data-lid'));
+      return;
+    }
     if(el.id === 'resetLists'){
       try{ localStorage.removeItem(LK); localStorage.removeItem(LK_LEGACY); }catch(e){}
       try{ __lLoad(); }catch(e){
@@ -1346,7 +1419,8 @@ function log(m){
   try{ window.__pipLog = (window.__pipLog || []).concat([m]).slice(-3); }catch(e){}
 }
 
-/* ---------- 透明桌面字幕（纯字幕，无按键，可拖动） ---------- */
+/* ---------- 透明桌面字幕（纯字幕，无按键，可拖动并记住屏幕位置） ---------- */
+var FPK = 'asmr_float_pos_v1';
 var FloatSub = {
   on: false,
   el: null, textEl: null,
@@ -1355,17 +1429,44 @@ var FloatSub = {
     this.textEl = document.getElementById('floatText');
     if (!this.el) return;
     this.makeDraggable();
+    this.applySavedPos();
+  },
+  savePos(){
+    var el = this.el;
+    if (!el || !window.innerWidth || !window.innerHeight) return;
+    try{
+      var r = el.getBoundingClientRect();
+      var cx = (r.left + r.width / 2) / window.innerWidth;
+      var ty = r.top / window.innerHeight;
+      localStorage.setItem(FPK, JSON.stringify({ cx: Math.max(0.05, Math.min(0.95, cx)), ty: Math.max(0.02, Math.min(0.94, ty)) }));
+    }catch(e){}
+  },
+  applySavedPos(){
+    var el = this.el;
+    if (!el) return;
+    var p = null;
+    try{ p = JSON.parse(localStorage.getItem(FPK) || 'null'); }catch(e){ p = null; }
+    if (!p || typeof p.cx !== 'number' || typeof p.ty !== 'number') return;
+    var vw = window.innerWidth || 360, vh = window.innerHeight || 640;
+    var w = el.offsetWidth || 220, h = el.offsetHeight || 42;
+    var nx = Math.min(Math.max(4, Math.round(p.cx * vw - w / 2)), Math.max(4, vw - w - 4));
+    var ny = Math.min(Math.max(4, Math.round(p.ty * vh)), Math.max(4, vh - h - 4));
+    el.style.transform = 'none';
+    el.style.left = nx + 'px';
+    el.style.top = ny + 'px';
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
   },
   makeDraggable(){
-    var el = this.el;
+    var self = this, el = this.el;
     if (!el || el.dataset.dragReady) return;
     el.dataset.dragReady = '1';
-    var sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+    var sx = 0, sy = 0, ox = 0, oy = 0, dragging = false, moved = false;
     function down(e){
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       var r = el.getBoundingClientRect();
       sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
-      dragging = true;
+      dragging = true; moved = false;
       el.classList.add('dragging');
       el.style.transform = 'none';
       el.style.left = ox + 'px';
@@ -1377,6 +1478,7 @@ var FloatSub = {
     }
     function move(e){
       if (!dragging) return;
+      if (Math.abs(e.clientX - sx) > 2 || Math.abs(e.clientY - sy) > 2) moved = true;
       var w = el.offsetWidth, h = el.offsetHeight;
       var nx = Math.min(Math.max(0, ox + e.clientX - sx), Math.max(0, window.innerWidth - w));
       var ny = Math.min(Math.max(0, oy + e.clientY - sy), Math.max(0, window.innerHeight - h));
@@ -1388,17 +1490,17 @@ var FloatSub = {
       dragging = false;
       el.classList.remove('dragging');
       try{ el.releasePointerCapture(e.pointerId); }catch(x){}
+      if (moved) self.savePos();
     }
     el.addEventListener('pointerdown', down);
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
     window.addEventListener('resize', function(){
-      if (!el.style.left || el.style.transform !== 'none') return;
-      var r = el.getBoundingClientRect();
-      var nx = Math.min(Math.max(0, r.left), Math.max(0, window.innerWidth - el.offsetWidth));
-      var ny = Math.min(Math.max(0, r.top), Math.max(0, window.innerHeight - el.offsetHeight));
-      el.style.left = nx + 'px'; el.style.top = ny + 'px';
+      if (!self.on) return;
+      if (el.style.left && el.style.transform === 'none'){
+        self.applySavedPos();
+      }
     });
   },
   show(){
@@ -1407,6 +1509,8 @@ var FloatSub = {
     this.on = true;
     this.el.classList.add('on');
     this.set(textOfNow());
+    var self = this;
+    setTimeout(function(){ self.applySavedPos(); }, 0);
     syncSubButtons();
   },
   hide(){
@@ -1815,6 +1919,72 @@ function __toggleBatchSelect(rj, cardEl){
   __updateBatchBar();
 }
 
+function __isServerList(lid){
+  var base = window.__LISTS__ || [];
+  for(var i = 0; i < base.length; i++){ if(base[i] && base[i].id === lid) return true; }
+  return false;
+}
+function __lRename(lid, name){
+  var l = __lById(lid);
+  var nm = String(name || '').trim();
+  if(!l || !nm) return false;
+  l.name = nm;
+  __lSave();
+  return true;
+}
+function __lDelete(lid){
+  if(__isServerList(lid)) return false;
+  for(var i = 0; i < LISTS.length; i++){
+    if(LISTS[i].id === lid){
+      LISTS.splice(i, 1);
+      __lSave();
+      return true;
+    }
+  }
+  return false;
+}
+function __exportLists(){
+  try{
+    var d = new Date();
+    var ymd = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+    var payload = JSON.stringify({
+      version: 2,
+      exportedAt: d.toISOString(),
+      lists: LISTS.map(function(l){ return { id:l.id, name:l.name, by:l.by || '谢hhhh', works:l.works.slice() }; })
+    }, null, 2);
+    var blob = new Blob([payload], { type: 'application/json;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'asmr-lists-backup-' + ymd + '.json';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){ try{ a.remove(); URL.revokeObjectURL(url); }catch(e){} }, 1000);
+    showToast('已导出列表备份');
+  }catch(e){
+    showToast('导出失败：' + (e && e.message || '未知错误'));
+  }
+}
+function __importListsRaw(rawText){
+  var parsed = JSON.parse(String(rawText || ''));
+  var arr = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.lists) ? parsed.lists : null);
+  if(!arr || !arr.length) throw new Error('备份文件中没有有效列表');
+  var seen = {}, clean = [];
+  arr.forEach(function(item){
+    if(!item || (!item.id && !item.name)) return;
+    var id = String(item.id || ('L' + Math.random().toString(36).slice(2, 8)));
+    if(seen[id]) return;
+    seen[id] = 1;
+    clean.push(__lMakeList({ id:id, name:item.name, by:item.by, works:item.works }));
+  });
+  if(!clean.length) throw new Error('没有可导入的列表');
+  var srv = __lBuildServerSnap(window.__LISTS__ || []);
+  __lState = { version: 2, serverSig: srv.sig, serverSnap: srv.snap, lists: clean };
+  LISTS = __lState.lists;
+  __lSave();
+  return clean.length;
+}
+
 function renderLists(skipHist){
   __exitBatch();
   __fromListId = null;
@@ -1822,12 +1992,21 @@ function renderLists(skipHist){
   ttl.textContent = '我的列表';
   if(!skipHist && window.__hist) window.__hist.push('lists');
   var h = __navTabsHtml('lists')
+        + '<div class="ltools">'
+        + '<div class="back" id="exportLists">↑ 导出备份</div>'
+        + '<div class="back" id="importLists">↓ 导入备份</div>'
         + '<div class="back" id="resetLists" style="color:var(--sub)">⟳ 恢复默认列表</div>'
+        + '</div>'
         + '<div class="lgrid">';
   for(var i=0;i<LISTS.length;i++){
-    var l = LISTS[i], cv = __lCover(l);
+    var l = LISTS[i], cv = __lCover(l), isSrv = __isServerList(l.id);
     h += '<div class="lcard" data-lid="'+esc(l.id)+'">'
       + (cv?'<img class="lt" loading="lazy" src="'+esc(cv)+'" alt="">':'<div class="lt"></div>')
+      + '<div class="lcard-acts">'
+      + '<button type="button" class="ledit" title="重命名列表" aria-label="重命名列表" data-lid="'+esc(l.id)+'">'
+      + '<svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>'
+      + (!isSrv ? '<button type="button" class="ldel" title="删除列表" aria-label="删除列表" data-lid="'+esc(l.id)+'">×</button>' : '')
+      + '</div>'
       + '<div class="lm"><div class="ln">'+esc(l.name)+'</div>'
       + '<div class="lb">By '+esc(l.by)+'</div>'
       + '<div class="lc">'+__lCount(l)+' works</div></div></div>';
@@ -1848,6 +2027,7 @@ function renderListWorks(lid, skipHist){
   ttl.textContent = l.name;
   if(!skipHist && window.__hist) window.__hist.push('list', lid);
   var list = l.works.map(__lFind).filter(Boolean);
+  var isSrv = __isServerList(l.id);
   /* 清理已不在当前列表里的已选项 */
   __batchSel = __batchSel.filter(function(rj){ return l.works.indexOf(rj) >= 0; });
 
@@ -1858,7 +2038,11 @@ function renderListWorks(lid, skipHist){
     + '<h2 style="font-size:17px;margin:2px 0 4px">'+esc(l.name)+'</h2>'
     + '<div style="font-size:12.5px;color:var(--sub)">By '+esc(l.by)+' · '+list.length+' works</div>'
     + '</div>'
-    + (list.length ? '<div class="lhead-acts"><button type="button" class="lbtn'+(__batchMode?' on':'')+'" id="batchModeBtn">'+(__batchMode?'完成选择':'批量移动')+'</button></div>' : '')
+    + '<div class="lhead-acts">'
+    + (list.length ? '<button type="button" class="lbtn'+(__batchMode?' on':'')+'" id="batchModeBtn">'+(__batchMode?'完成选择':'批量移动')+'</button>' : '')
+    + '<button type="button" class="lbtn" id="renameListBtn" data-lid="'+esc(l.id)+'">重命名</button>'
+    + (!isSrv ? '<button type="button" class="lbtn danger" id="deleteListBtn" data-lid="'+esc(l.id)+'">删除列表</button>' : '')
+    + '</div>'
     + '</div>'
     + '<div class="grid" style="padding:0">';
   for(var i=0;i<list.length;i++){
@@ -2024,19 +2208,47 @@ function closeAddSheet(){
   if(sh){ sh.classList.remove('on'); sh.setAttribute('aria-hidden','true'); }
 }
 
-function openNewListModal(){
+var __editingLid = null;
+var __deletingLid = null;
+
+function openNewListModal(editLid){
   var m = document.getElementById('newListModal');
   var inp = document.getElementById('nlInput');
+  var ttlEl = document.getElementById('nlTitle');
+  var subEl = document.getElementById('nlSubmit');
   if(!m || !inp) return;
-  inp.value = '';
+  var target = editLid ? __lById(editLid) : null;
+  __editingLid = target ? target.id : null;
+  if(ttlEl) ttlEl.textContent = target ? '重命名列表' : '新建列表';
+  if(subEl) subEl.textContent = target ? '保存' : '创建';
+  inp.value = target ? target.name : '';
   m.classList.add('on');
   m.setAttribute('aria-hidden','false');
-  setTimeout(function(){ try{ inp.focus(); }catch(e){} }, 30);
+  setTimeout(function(){ try{ inp.focus(); if(target && inp.select) inp.select(); }catch(e){} }, 30);
 }
 function closeNewListModal(){
+  __editingLid = null;
   var m = document.getElementById('newListModal');
   if(m){ m.classList.remove('on'); m.setAttribute('aria-hidden','true'); }
 }
+
+function openDelListModal(lid){
+  var l = __lById(lid);
+  if(!l || __isServerList(lid)) return;
+  var m = document.getElementById('delListModal');
+  var desc = document.getElementById('dlDesc');
+  if(!m) return;
+  __deletingLid = lid;
+  if(desc) desc.textContent = '确定删除列表「' + l.name + '」吗？列表内的作品不会被删除。';
+  m.classList.add('on');
+  m.setAttribute('aria-hidden','false');
+}
+function closeDelListModal(){
+  __deletingLid = null;
+  var m = document.getElementById('delListModal');
+  if(m){ m.classList.remove('on'); m.setAttribute('aria-hidden','true'); }
+}
+
 function __lAsk(){
   var sh = document.getElementById('addSheet');
   if(sh && sh.classList.contains('on')){
@@ -2051,7 +2263,44 @@ function __lAsk(){
       return;
     }
   }
-  openNewListModal();
+  openNewListModal(null);
+}
+
+/* ---------- 浅色 / 深色主题切换 ---------- */
+var TK = 'asmr_theme_v1';
+function __currentTheme(){
+  var attr = document.documentElement.getAttribute('data-theme');
+  if(attr === 'light' || attr === 'dark') return attr;
+  try{
+    if(window.matchMedia && window.matchMedia('(prefers-color-scheme:dark)').matches) return 'dark';
+  }catch(e){}
+  return 'light';
+}
+function __syncThemeUi(){
+  var isDark = __currentTheme() === 'dark';
+  var icon = document.getElementById('themeIcon');
+  var btn = document.getElementById('btnTheme');
+  if(icon){
+    icon.innerHTML = isDark
+      ? '<path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM2 13h2a1 1 0 1 0 0-2H2a1 1 0 1 0 0 2zm18 0h2a1 1 0 1 0 0-2h-2a1 1 0 1 0 0 2zM11 2v2a1 1 0 1 0 2 0V2a1 1 0 1 0-2 0zm0 18v2a1 1 0 1 0 2 0v-2a1 1 0 1 0-2 0zM5.99 4.58a1 1 0 0 0-1.41 1.41l1.06 1.06a1 1 0 1 0 1.41-1.41L5.99 4.58zm12.37 12.37a1 1 0 0 0-1.41 1.41l1.06 1.06a1 1 0 1 0 1.41-1.41l-1.06-1.06zm1.06-10.96a1 1 0 0 0-1.41-1.41l-1.06 1.06a1 1 0 1 0 1.41 1.41l1.06-1.06zM7.05 18.36a1 1 0 0 0-1.41-1.41l-1.06 1.06a1 1 0 1 0 1.41 1.41l1.06-1.06z"/>'
+      : '<path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/>';
+  }
+  if(btn){
+    var tip = isDark ? '切换为浅色主题' : '切换为深色主题';
+    btn.title = tip;
+    btn.setAttribute('aria-label', tip);
+  }
+}
+function __setTheme(next){
+  if(next !== 'light' && next !== 'dark') return;
+  document.documentElement.setAttribute('data-theme', next);
+  try{ localStorage.setItem(TK, next); }catch(e){}
+  __syncThemeUi();
+}
+function __toggleTheme(){
+  var next = __currentTheme() === 'dark' ? 'light' : 'dark';
+  __setTheme(next);
+  showToast(next === 'dark' ? '已切换为深色主题' : '已切换为浅色主题');
 }
 
 try{ __lLoad(); }catch(e){
@@ -2064,12 +2313,34 @@ try{ __lLoad(); }catch(e){
 try{
   window.__nav = { home:renderHome, work:renderWork, play:playTrack, full:openFull,
                    lists:renderLists, list:renderListWorks, move:__lMove, moveMany:__lMoveMany,
+                   rename:__lRename, del:__lDelete, importRaw:__importListsRaw, setTheme:__setTheme,
                    L:function(){ return LISTS; } };
 }catch(e){}
 (function(){
   if(ttl){ ttl.title = '返回主页'; ttl.onclick = function(){ __clearSearch(); renderLists(); }; }
   var b = document.getElementById('btnLists');
   if(b) b.onclick = function(){ __clearSearch(); renderLists(); };
+  var tb = document.getElementById('btnTheme');
+  if(tb) tb.onclick = __toggleTheme;
+  __syncThemeUi();
+
+  var fi = document.getElementById('importListsFile');
+  if(fi) fi.addEventListener('change', function(){
+    var file = fi.files && fi.files[0];
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(){
+      try{
+        var cnt = __importListsRaw(reader.result);
+        renderLists(true);
+        showToast('已成功导入 ' + cnt + ' 个列表');
+      }catch(err){
+        showToast('导入失败：' + (err && err.message || '格式无效'));
+      }
+    };
+    reader.readAsText(file, 'utf-8');
+  });
+
   var x = document.getElementById('asClose');
   if(x) x.onclick = closeAddSheet;
   var nw = document.getElementById('asNew');
@@ -2138,11 +2409,36 @@ try{
     var inp = document.getElementById('nlInput');
     var name = String(inp ? inp.value : '').trim();
     if(!name) return;
+    if(__editingLid){
+      var eid = __editingLid;
+      __lRename(eid, name);
+      closeNewListModal();
+      if(__curView && __curView.type === 'list' && __curView.lid === eid) renderListWorks(eid, true);
+      else renderLists(true);
+      showToast('已重命名为「' + name + '」');
+      return;
+    }
     __lNew(name);
     closeNewListModal();
     renderLists(true);
     showToast('已创建列表「' + name + '」');
   });
+
+  var dlm = document.getElementById('delListModal');
+  var dlc = document.getElementById('dlCancel');
+  var dlk = document.getElementById('dlConfirm');
+  if(dlc) dlc.onclick = closeDelListModal;
+  if(dlm) dlm.addEventListener('click', function(e){ if(e.target === dlm) closeDelListModal(); });
+  if(dlk) dlk.onclick = function(){
+    var lid = __deletingLid;
+    var l = __lById(lid);
+    var lname = l ? l.name : '';
+    closeDelListModal();
+    if(lid && __lDelete(lid)){
+      renderLists(true);
+      showToast('已删除列表「' + lname + '」');
+    }
+  };
 })();
 
 document.addEventListener('keydown', function(e){
@@ -2151,6 +2447,8 @@ document.addEventListener('keydown', function(e){
   if(e.code==='Space' && !typing && full.classList.contains('on')){ e.preventDefault();
     if(au.paused){var p=au.play();if(p&&p.catch)p.catch(function(){})}else au.pause(); }
   if(e.code==='Escape'){
+    var dlm = document.getElementById('delListModal');
+    if(dlm && dlm.classList.contains('on')){ closeDelListModal(); return; }
     var nlm = document.getElementById('newListModal');
     if(nlm && nlm.classList.contains('on')){ closeNewListModal(); return; }
     var sh = document.getElementById('addSheet');

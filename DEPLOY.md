@@ -7,7 +7,7 @@
 | 仓库 | 作用 |
 |---|---|
 | `xiwhash/asmr-site-src` | **源码**（本仓库）。src/* + covers + build.js + check.js |
-| `xiwhash/asmr-online` | **部署产物**：index.html / m.html / player.html + covers/，GitHub Pages 从这里出 |
+| `xiwhash/asmr-online` | **部署产物**：index.html / m.html / player.html + subs/ + covers/，GitHub Pages 从这里出 |
 | `xiwhash/asmr-audio-1 … asmr-audio-11` | 音频（opus），每个约 850MB 一换，同样开了 Pages |
 
 ## 本地构建

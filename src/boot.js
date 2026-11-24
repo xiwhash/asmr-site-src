@@ -1,4 +1,8 @@
 (function(){
+  try{
+    var th = localStorage.getItem('asmr_theme_v1');
+    if (th === 'light' || th === 'dark') document.documentElement.setAttribute('data-theme', th);
+  }catch(e){}
   window.__bootOK = false;
   function show(msg){
     var f = document.getElementById('bootFail'); if (!f) return;
