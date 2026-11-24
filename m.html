@@ -426,6 +426,8 @@ window.__LISTS__ = [
   "name": "我标记的",
   "by": "谢hhhh",
   "works": [
+   "RJ01740696",
+   "RJ01751419",
    "RJ01700245",
    "RJ01679651",
    "RJ01672820",
@@ -471,9 +473,7 @@ window.__LISTS__ = [
    "RJ01145632",
    "RJ01594961",
    "RJ01551648",
-   "RJ01558397",
-   "RJ01751419",
-   "RJ01740696"
+   "RJ01558397"
   ]
  },
  {
@@ -601,22 +601,23 @@ function esc(s){ return String(s||'').replace(/[&<>"]/g,function(c){return {'&':
 
 /* ==================== history 路由（手机返回键回到上一级） ==================== */
 var __histRoute = {
-  current: 'home',
+  current: 'lists',
   rj: null,
   init(){
-    /* 初始状态：首页 */
-    try{ history.replaceState({ __p: 'home' }, '', location.pathname + location.search); }catch(e){}
+    /* 初始状态：主页（我的列表） */
+    try{ history.replaceState({ __p: 'lists' }, '', location.pathname + location.search); }catch(e){}
     window.addEventListener('popstate', function(e){
       full.classList.remove('on');       /* 任何返回都先关全屏播放器 */
-      var st = e.state || { __p: 'home' };
+      var st = e.state || { __p: 'lists' };
       if (st.__p === 'player'){
         /* 返回：关掉全屏播放器，回到作品页 */
         full.classList.remove('on');
         if (cur.w) renderWork(cur.w.rj, true);
         __histRoute.current = 'work';
-      } else if (st.__p === 'lists'){
-        renderLists(true);
-        __histRoute.current = 'lists';
+      } else if (st.__p === 'home'){
+        __clearSearch();
+        renderHome(true);
+        __histRoute.current = 'home';
         __histRoute.rj = null;
       } else if (st.__p === 'list' && st.lid){
         renderListWorks(st.lid, true);
@@ -627,11 +628,11 @@ var __histRoute = {
         __histRoute.current = 'work';
         __histRoute.rj = st.rj;
       } else {
-        /* 返回首页 */
+        /* 返回主页（我的列表） */
         full.classList.remove('on');
         __clearSearch();
-renderHome(true);
-        __histRoute.current = 'home';
+        renderLists(true);
+        __histRoute.current = 'lists';
         __histRoute.rj = null;
       }
     });
@@ -704,8 +705,8 @@ function __clearSearch(){
 function __navTabsHtml(active){
   var listCnt = (typeof LISTS !== 'undefined' && LISTS) ? LISTS.length : 0;
   return '<div class="navtabs">'
-    + '<button type="button" class="ntab'+(active==='home'?' on':'')+'" id="tabHome">主页 · 全部作品 ('+works.length+')</button>'
-    + '<button type="button" class="ntab'+(active==='lists'?' on':'')+'" id="tabLists">我的列表 ('+listCnt+')</button>'
+    + '<button type="button" class="ntab'+(active==='lists'?' on':'')+'" id="tabLists">主页 · 我的列表 ('+listCnt+')</button>'
+    + '<button type="button" class="ntab'+(active==='home'?' on':'')+'" id="tabHome">全部作品 ('+works.length+')</button>'
     + '</div>';
 }
 function renderHome(skipHist){
@@ -2162,6 +2163,13 @@ function __lLoad(){
     var prevSrv = Array.isArray(oldSnap[b.id]) ? oldSnap[b.id] : [];
     var addedBySrv = b.works.filter(function(rj){ return prevSrv.indexOf(rj) < 0; });
     var removedBySrv = prevSrv.filter(function(rj){ return b.works.indexOf(rj) < 0; });
+    var sameMembersAsPrev = mine.works.length === prevSrv.length &&
+      mine.works.every(function(rj){ return prevSrv.indexOf(rj) >= 0; });
+    if(sameMembersAsPrev && !addedBySrv.length && !removedBySrv.length){
+      /* 本地未改过该列表成员时，同步服务器最新排序（如置顶顺序更新） */
+      mine.works = b.works.slice();
+      return;
+    }
     if(removedBySrv.length){
       mine.works = mine.works.filter(function(rj){ return removedBySrv.indexOf(rj) < 0; });
     }
@@ -2368,8 +2376,8 @@ function renderListWorks(lid, skipHist){
   __batchSel = __batchSel.filter(function(rj){ return l.works.indexOf(rj) >= 0; });
 
   var h = '<div class="work"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
-    + '<div class="back" id="backLists">← 我的列表</div>'
-    + '<div class="back" id="backHome" style="color:var(--sub)">⌂ 返回主页</div></div>'
+    + '<div class="back" id="backLists">← 返回主页</div>'
+    + '<div class="back" id="backHome" style="color:var(--sub)">全部作品</div></div>'
     + '<div class="lhead"><div>'
     + '<h2 style="font-size:17px;margin:2px 0 4px">'+esc(l.name)+'</h2>'
     + '<div style="font-size:12.5px;color:var(--sub)">By '+esc(l.by)+' · '+list.length+' works</div>'
@@ -2583,9 +2591,9 @@ try{
                    L:function(){ return LISTS; } };
 }catch(e){}
 (function(){
-  if(ttl){ ttl.title = '返回主页'; ttl.onclick = function(){ __clearSearch(); renderHome(); }; }
+  if(ttl){ ttl.title = '返回主页'; ttl.onclick = function(){ __clearSearch(); renderLists(); }; }
   var b = document.getElementById('btnLists');
-  if(b) b.onclick = function(){ renderLists(); };
+  if(b) b.onclick = function(){ __clearSearch(); renderLists(); };
   var x = document.getElementById('asClose');
   if(x) x.onclick = closeAddSheet;
   var nw = document.getElementById('asNew');
@@ -2698,7 +2706,7 @@ try{
   }
 }catch(e){ window.__pipHttpsReady = false; }
 __clearSearch();
-renderHome(true);
+renderLists(true);
 window.__bootOK = true;
 
 /* ---------- 从 HTTP 切到 HTTPS 后恢复播放，并提示点开系统画中画 ---------- */
